@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# Local environment configuration
+.env
+
+# Generated artifacts
+storage/
+reports/
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+
