@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence
+
+from tqdm.auto import tqdm
 
 from config import CONFIG, AppConfig
 from retrievers.graph_rag_retriever import GraphRAGRetriever
@@ -52,6 +55,8 @@ class BenchmarkRunner:
             api_key=self.config.gemini.api_key,
             generator_model=self.config.gemini.generator_model,
             judge_model=self.config.gemini.judge_model,
+            max_calls_per_minute=self.config.gemini.max_calls_per_minute,
+            min_call_interval=self.config.gemini.min_call_interval_seconds,
         )
         self.redis_manager = RedisManager(self.config.redis.url)
 
@@ -136,10 +141,13 @@ class BenchmarkRunner:
         data_paths = self.corpus_builder.discover_documents()
         self._baseline_hashes = build_sha_index(data_paths)
 
+        hash_source = "|".join(f"{name}:{digest}" for name, digest in sorted(self._baseline_hashes.items()))
+        dataset_hash = hashlib.sha256(hash_source.encode("utf-8")).hexdigest()
+
         setup_results: List[SetupMetrics] = []
-        for retriever in self.retrievers:
+        for retriever in tqdm(self.retrievers, desc="Building retrievers", unit="retriever"):
             LOGGER.info("Building retriever: %s", retriever.name)
-            metrics = retriever.build(artifacts)
+            metrics = retriever.build(artifacts, dataset_hash)
             storage_paths = retriever.storage_paths()
             metrics.storage_mb = directory_size_mb(storage_paths)
             setup_results.append(metrics)
@@ -164,6 +172,7 @@ class BenchmarkRunner:
                         retriever_name=retriever.name,
                         query_id=task.query_id,
                         query_text=task.text,
+                        answer_text=None,
                         retrieval_latency_ms=0.0,
                         end_to_end_latency_ms=0.0,
                         context_relevance=0.0,
@@ -186,9 +195,11 @@ class BenchmarkRunner:
             return
         LOGGER.info("Detected changed files: %s", ", ".join(changed_files))
         updated_artifacts = self.corpus_builder.build()
+        hash_source = "|".join(f"{name}:{digest}" for name, digest in sorted(current_hashes.items()))
+        dataset_hash = hashlib.sha256(hash_source.encode("utf-8")).hexdigest()
         for retriever in self.retrievers:
             start = time.perf_counter()
-            retriever.build(updated_artifacts)
+            retriever.build(updated_artifacts, dataset_hash)
             elapsed = time.perf_counter() - start
             timings[retriever.name] = elapsed
             self.metrics.add_update(retriever.name, {"total_seconds": elapsed}, retriever.storage_paths())

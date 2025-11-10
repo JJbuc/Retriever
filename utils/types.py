@@ -68,6 +68,7 @@ class QueryMetrics:
     retriever_name: str
     query_id: int
     query_text: str
+    answer_text: Optional[str]
     retrieval_latency_ms: float
     end_to_end_latency_ms: float
     context_relevance: float

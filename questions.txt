@@ -1,0 +1,37 @@
+Beyond simple vector search, what are the fundamental trade-offs between a dense vector retriever, a sparse (keyword-based) retriever, and a knowledge graph-based retriever (GraphRAG)? In which scenarios would you prioritize one over the others?
+The document mentions that long-context LLMs still need RAG due to issues like "lost in the middle," cost, and latency. Explain how a sophisticated retriever system specifically mitigates the "lost in the middle" problem more effectively than just stuffing a long context window.
+Describe a hybrid retrieval architecture that combines the strengths of VectorDB and GraphRAG. How would you fuse the results from these two disparate systems before passing the context to the generator LLM?
+Explain how Key-Value Caching in the Transformer decoder directly impacts the inference latency and cost of the Generation (G) step in a RAG pipeline, especially when using a large generator model.
+How does the retrieval process in GraphRAG fundamentally differ from that of a VectorDB? Discuss how "entities" and "relationships" are leveraged versus "dense embeddings."
+What is Approximate Nearest Neighbor (ANN) search, and why is it indispensable for VectorDBs in production RAG systems? What are the potential downsides of using ANN over exact search?
+You need to retrieve information that requires understanding both the semantic meaning of a query and matching specific, rare technical acronyms. Design a retrieval strategy that addresses this need.
+What is Maximal Marginal Relevance (MMR) and how can it be used in a RAG system to balance the relevance and diversity of retrieved chunks? Give a concrete example of a query where this is critical.
+Compare and contrast the HyDE and HyPE query transformation techniques. From a systems design perspective, which one is more suitable for a high-throughput, low-latency application and why?
+When would you consider fine-tuning your embedding model for a RAG system? Describe the process and what kind of data you would need. How would you evaluate if the fine-tuning was successful?
+What is Matryoshka Representation Learning (MRL) and how does it offer a more flexible approach to scaling embeddings compared to traditional dimensionality reduction?
+You are concerned about the memory footprint of your VectorDB. Compare the pros and cons of scalar quantization versus binary quantization for your embedding vectors.
+Walk me through how you would calculate Context Precision@K and Context Recall for a given query and its retrieved results. Why are these more nuanced than traditional Precision and Recall?
+A RAG system achieves high Context Recall but low Faithfulness. What does this diagnose, and where in the pipeline would you focus your debugging efforts? What specific actions would you take?
+How would you evaluate the performance of a GraphRAG system differently from a standard vector-based RAG system? What new metrics or validation techniques might be necessary?
+Explain the difference between an "order-aware" metric (like NDCG) and an "order-unaware" metric (like Recall). Why is order so critical in the context of a limited LLM context window?
+Describe the "two-stage" retrieval process involving a bi-encoder and a cross-encoder. Why can't the cross-encoder be used for the first stage, and how does this architecture balance efficiency with accuracy?
+What are the specific challenges of chunking structured documents (like PDFs with tables and figures) for RAG? How do strategies for these documents differ from chunking plain text?
+Your RAG system needs to handle a query that is inherently multi-hop (e.g., "What was the market cap of the company that acquired the startup founded by [Person A] in 2020?"). How would a GraphRAG retriever potentially have an advantage over a standard VectorDB in answering this?
+How can a "query classifier" be used to optimize a RAG pipeline's latency and cost? Provide examples of different query types and how the retrieval or generation strategy might change for each.
+What is instruction-following re-ranking? Provide a concrete example of an instruction you would give a re-ranker to improve the quality of context for a financial analysis RAG system.
+Compare "reasoning" LLMs (like GPT-4o) with "non-reasoning" LLMs for the generator component in a RAG system. For a complex analytical task, how does a reasoning LLM better leverage the retrieved context?
+How does Chain-of-Thought (CoT) prompting in the generator interact with the quality of the retrieved context? Can good retrieval compensate for a weaker generator, or vice-versa?
+The document mentions that a weak retriever can cause a strong generator to hallucinate. Explain the mechanism behind this. Conversely, can a strong retriever save a weak generator?
+You are building a RAG system for a domain with highly specialized jargon (e.g., legal or medical). Beyond just the retriever, what steps would you take at the generator level (e.g., prompt engineering, fine-tuning) to ensure outputs are both accurate and use appropriate terminology?
+
+
+
+
+
+
+
+
+
+
+
+

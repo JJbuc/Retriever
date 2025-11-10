@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
+import threading
 from typing import Any, Dict, List, Tuple
 
 import google.generativeai as genai
@@ -80,16 +82,40 @@ class Triple:
 
 
 class GeminiService:
-    def __init__(self, api_key: str | None, generator_model: str, judge_model: str) -> None:
+    def __init__(
+        self,
+        api_key: str | None,
+        generator_model: str,
+        judge_model: str,
+        max_calls_per_minute: int,
+        min_call_interval: float,
+    ) -> None:
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is required when using GeminiService.")
         genai.configure(api_key=api_key)
         self.generator_model_name = generator_model
         self.judge_model_name = judge_model
         self.generator = genai.GenerativeModel(generator_model)
-        self.judge = self.generator
-        self._judge_name = generator_model
-        self._judge_fallback = True
+        try:
+            self.judge = genai.GenerativeModel(judge_model)
+            self._judge_name = judge_model
+            self._judge_fallback = False
+        except Exception as exc:  # pragma: no cover - depends on external service configs
+            LOGGER.warning(
+                "Failed to initialise Gemini judge model %s (%s). Falling back to generator model %s.",
+                judge_model,
+                exc,
+                generator_model,
+            )
+            self.judge = self.generator
+            self._judge_name = generator_model
+            self._judge_fallback = True
+
+        self._max_calls_per_minute = max(0, max_calls_per_minute)
+        self._min_call_interval = max(0.0, min_call_interval)
+        self._rate_lock = threading.Lock()
+        self._call_timestamps: deque[float] = deque()
+        self._last_call_at: float | None = None
 
     def generate_answer(self, question: str, context: str) -> GenerationResult:
         prompt = (
@@ -97,7 +123,7 @@ class GeminiService:
             f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
         )
         start = time.perf_counter()
-        response = self.generator.generate_content(prompt)
+        response = self._call_model(self.generator, prompt)
         latency = time.perf_counter() - start
         text = _response_text(response).strip()
         usage = _usage_to_dict(getattr(response, "usage_metadata", None))
@@ -171,7 +197,7 @@ class GeminiService:
 
     def _generate_with_judge(self, prompt: str):
         try:
-            return self.judge.generate_content(prompt)
+            return self._call_model(self.judge, prompt)
         except Exception as exc:  # pragma: no cover - depends on external service availability
             if self._judge_fallback:
                 raise
@@ -183,5 +209,46 @@ class GeminiService:
             )
             self.judge = self.generator
             self._judge_fallback = True
-            return self.judge.generate_content(prompt)
+            return self._call_model(self.judge, prompt)
+
+    def _call_model(self, model, prompt: str):
+        self._before_call()
+        try:
+            return model.generate_content(prompt)
+        finally:
+            self._after_call()
+
+    def _before_call(self) -> None:
+        if self._max_calls_per_minute <= 0 and self._min_call_interval <= 0:
+            return
+        wait_time = 0.0
+        while True:
+            with self._rate_lock:
+                now = time.perf_counter()
+                window = 60.0
+                while self._call_timestamps and now - self._call_timestamps[0] >= window:
+                    self._call_timestamps.popleft()
+                if self._min_call_interval > 0 and self._last_call_at is not None:
+                    elapsed = now - self._last_call_at
+                    if elapsed < self._min_call_interval:
+                        wait_time = max(wait_time, self._min_call_interval - elapsed)
+                if self._max_calls_per_minute > 0 and len(self._call_timestamps) >= self._max_calls_per_minute:
+                    earliest = self._call_timestamps[0]
+                    wait_time = max(wait_time, window - (now - earliest))
+                if wait_time == 0.0:
+                    return
+            time.sleep(wait_time)
+            wait_time = 0.0
+
+    def _after_call(self) -> None:
+        if self._max_calls_per_minute <= 0 and self._min_call_interval <= 0:
+            return
+        with self._rate_lock:
+            now = time.perf_counter()
+            window = 60.0
+            if self._max_calls_per_minute > 0:
+                while self._call_timestamps and now - self._call_timestamps[0] >= window:
+                    self._call_timestamps.popleft()
+                self._call_timestamps.append(now)
+            self._last_call_at = now
 

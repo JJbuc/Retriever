@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import defaultdict, deque
@@ -7,11 +8,12 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import networkx as nx
+from tqdm.auto import tqdm
 from neo4j import GraphDatabase
 
 from retrievers.base import BaseRetriever
 from utils.gemini_helpers import GeminiService, Triple
-from utils.graph_utils import save_graph
+from utils.graph_utils import load_graph, save_graph
 from utils.types import CorpusArtifacts, DocumentChunk, QueryMetrics, RetrievalHit, RetrievalResult, SetupBreakdown, SetupMetrics
 
 LOGGER = logging.getLogger(__name__)
@@ -41,14 +43,14 @@ class GraphRAGRetriever(BaseRetriever):
         self._neo4j_password = neo4j_password
         self._neo4j_database = neo4j_database or "neo4j"
 
-    def build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
+    def _build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
         build_start = time.perf_counter()
         self._chunk_lookup = {chunk.chunk_id: chunk for chunk in artifacts.chunks}
 
         triple_records: List[Triple] = []
         extraction_tokens = 0
         graph_start = time.perf_counter()
-        for chunk in artifacts.chunks:
+        for chunk in tqdm(artifacts.chunks, desc="GraphRAG triple extraction", unit="chunk"):
             triples, metadata = self.gemini_service.extract_triples(chunk.chunk_id, chunk.text)
             usage_info = metadata.get("usage", {})
             if not isinstance(usage_info, dict):
@@ -74,7 +76,7 @@ class GraphRAGRetriever(BaseRetriever):
                     relation=triple.relation,
                     chunk_id=triple.source_chunk_id,
                     confidence=triple.confidence,
-                    metadata=triple.metadata,
+                    metadata=json.dumps(triple.metadata),
                 )
             # Link chunk to entity nodes to preserve source context
             self._graph.add_node(chunk.chunk_id, label="chunk")
@@ -121,6 +123,19 @@ class GraphRAGRetriever(BaseRetriever):
         )
         return metrics
 
+    def _on_build_success(self, artifacts: CorpusArtifacts) -> None:
+        self._save_chunk_cache(artifacts.chunks)
+
+    def _load_cache(self) -> None:
+        cached_chunks = self._load_chunk_cache()
+        if cached_chunks:
+            self._chunk_lookup = {chunk.chunk_id: chunk for chunk in cached_chunks}
+        if self._graph_path.exists():
+            try:
+                self._graph = load_graph(self._graph_path)
+            except Exception as exc:  # pragma: no cover
+                LOGGER.warning("Failed to load cached knowledge graph: %s", exc)
+
     def _push_to_neo4j(self, triples: Iterable[Triple]) -> None:
         driver = GraphDatabase.driver(self._neo4j_uri, auth=(self._neo4j_user, self._neo4j_password))
         cypher = """
@@ -139,7 +154,7 @@ class GraphRAGRetriever(BaseRetriever):
                     object=triple.object,
                     chunk_id=triple.source_chunk_id,
                     confidence=triple.confidence,
-                    metadata=triple.metadata,
+                    metadata=json.dumps(triple.metadata),
                 )
         driver.close()
 
@@ -216,6 +231,7 @@ class GraphRAGRetriever(BaseRetriever):
             retriever_name=self.name,
             query_id=query_id,
             query_text=query,
+            answer_text=generation.text,
             retrieval_latency_ms=retrieval_latency_ms,
             end_to_end_latency_ms=end_to_end_ms,
             context_relevance=evaluation.context_relevance,

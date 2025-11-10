@@ -10,6 +10,7 @@ from rank_bm25 import BM25Okapi
 from retrievers.base import BaseRetriever
 from utils.embedding_utils import EmbeddingClient
 from utils.gemini_helpers import GeminiService
+from utils.metrics import ResourceMonitor, directory_size_mb, wait_for_filesystem_flush
 from utils.types import (
     CorpusArtifacts,
     DocumentChunk,
@@ -45,7 +46,8 @@ class HybridRetriever(BaseRetriever):
         self._bm25: BM25Okapi | None = None
         self._chunks: Dict[str, DocumentChunk] = {}
 
-    def build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
+    def _build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
+        monitor = ResourceMonitor()
         build_start = time.perf_counter()
 
         texts = [chunk.text for chunk in artifacts.chunks]
@@ -87,11 +89,13 @@ class HybridRetriever(BaseRetriever):
 
         self._chunks = {chunk.chunk_id: chunk for chunk in artifacts.chunks}
 
+        wait_for_filesystem_flush()
+        size_mb = directory_size_mb(self.storage_paths())
         metrics = SetupMetrics(
             retriever_name=self.name,
             total_build_seconds=total_seconds,
-            memory_peak_mb=0.0,  # calculated by benchmark runner
-            storage_mb=0.0,
+            memory_peak_mb=monitor.peak_memory_mb(),
+            storage_mb=size_mb,
             breakdown=SetupBreakdown(
                 total_seconds=total_seconds,
                 chunking_seconds=artifacts.chunk_seconds,
@@ -104,6 +108,23 @@ class HybridRetriever(BaseRetriever):
             },
         )
         return metrics
+
+    def _on_build_success(self, artifacts: CorpusArtifacts) -> None:
+        self._save_chunk_cache(artifacts.chunks)
+
+    def _load_cache(self) -> None:
+        cached_chunks = self._load_chunk_cache()
+        if cached_chunks:
+            self._chunks = {chunk.chunk_id: chunk for chunk in cached_chunks}
+            tokenized_corpus = [chunk.text.split(" ") for chunk in cached_chunks]
+            self._bm25 = BM25Okapi(tokenized_corpus)
+        else:
+            self._chunks = {}
+            self._bm25 = None
+        self._collection = self._vector_client.get_or_create_collection(
+            name=self._collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
 
     def _bm25_scores(self, query: str) -> List[Tuple[str, float]]:
         if self._bm25 is None:
@@ -160,6 +181,7 @@ class HybridRetriever(BaseRetriever):
             retriever_name=self.name,
             query_id=query_id,
             query_text=query,
+            answer_text=generation.text,
             retrieval_latency_ms=retrieval_latency,
             end_to_end_latency_ms=end_to_end,
             context_relevance=evaluation.context_relevance,

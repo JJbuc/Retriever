@@ -25,6 +25,8 @@ class GeminiSettings:
     embed_model: str = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
     generator_model: str = os.getenv("GEMINI_GENERATOR_MODEL", "models/gemini-2.5-flash")
     judge_model: str = os.getenv("GEMINI_JUDGE_MODEL", "models/gemini-2.5-flash")
+    max_calls_per_minute: int = int(os.getenv("GEMINI_MAX_CALLS_PER_MINUTE", "8"))
+    min_call_interval_seconds: float = float(os.getenv("GEMINI_MIN_CALL_INTERVAL", "0.0"))
 
 
 @dataclass

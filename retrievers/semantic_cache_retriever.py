@@ -10,6 +10,7 @@ import numpy as np
 from retrievers.base import BaseRetriever
 from utils.embedding_utils import EmbeddingClient
 from utils.gemini_helpers import GeminiService
+from utils.metrics import directory_size_mb, wait_for_filesystem_flush
 from utils.redis_utils import RedisManager, SemanticCache, SemanticCacheConfig
 from utils.types import (
     CorpusArtifacts,
@@ -49,7 +50,7 @@ class SemanticCacheRetriever(BaseRetriever):
         self._semantic_cache: SemanticCache | None = None
         self._vector_size: int = 0
 
-    def build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
+    def _build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
         build_start = time.perf_counter()
         texts = [chunk.text for chunk in artifacts.chunks]
         chunk_ids = [chunk.chunk_id for chunk in artifacts.chunks]
@@ -96,11 +97,13 @@ class SemanticCacheRetriever(BaseRetriever):
             ),
         )
 
+        wait_for_filesystem_flush()
+        size_mb = directory_size_mb(self.storage_paths())
         metrics = SetupMetrics(
             retriever_name=self.name,
             total_build_seconds=total_seconds,
             memory_peak_mb=0.0,
-            storage_mb=0.0,
+            storage_mb=size_mb,
             breakdown=SetupBreakdown(
                 total_seconds=total_seconds,
                 chunking_seconds=artifacts.chunk_seconds,
@@ -162,6 +165,7 @@ class SemanticCacheRetriever(BaseRetriever):
                 retriever_name=self.name,
                 query_id=query_id,
                 query_text=query,
+                answer_text=cached.get("answer"),
                 retrieval_latency_ms=embed_latency_ms + cache_latency_ms,
                 end_to_end_latency_ms=embed_latency_ms + cache_latency_ms,
                 context_relevance=cached["metadata"].get("context_relevance", 0.0),
@@ -211,6 +215,7 @@ class SemanticCacheRetriever(BaseRetriever):
             retriever_name=self.name,
             query_id=query_id,
             query_text=query,
+            answer_text=generation.text,
             retrieval_latency_ms=retrieval_latency_ms,
             end_to_end_latency_ms=end_to_end_ms,
             context_relevance=evaluation.context_relevance,
@@ -224,4 +229,30 @@ class SemanticCacheRetriever(BaseRetriever):
             },
         )
         return result, metrics
+
+    def _on_build_success(self, artifacts: CorpusArtifacts) -> None:
+        self._save_chunk_cache(artifacts.chunks)
+
+    def _load_cache(self) -> None:
+        cached_chunks = self._load_chunk_cache()
+        if cached_chunks:
+            self._chunks = {chunk.chunk_id: chunk for chunk in cached_chunks}
+        else:
+            self._chunks = {}
+        self._collection = self._vector_client.get_or_create_collection(
+            name=self._collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        if self._chunks and self._vector_size == 0:
+            sample_vector = self.embedding_client.embed_texts([next(iter(self._chunks.values())).text])[0]
+            self._vector_size = len(sample_vector)
+        if self._vector_size:
+            self._semantic_cache = SemanticCache(
+                self.redis_manager,
+                SemanticCacheConfig(
+                    index_name=self.index_name,
+                    distance_threshold=self.distance_threshold,
+                    vector_size=self._vector_size,
+                ),
+            )
 

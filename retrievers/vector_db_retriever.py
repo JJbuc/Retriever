@@ -10,7 +10,7 @@ import numpy as np
 from retrievers.base import BaseRetriever
 from utils.embedding_utils import EmbeddingClient
 from utils.gemini_helpers import GeminiService
-from utils.metrics import ResourceMonitor
+from utils.metrics import ResourceMonitor, directory_size_mb, wait_for_filesystem_flush
 from utils.types import (
     CorpusArtifacts,
     DocumentChunk,
@@ -41,7 +41,7 @@ class VectorDBRetriever(BaseRetriever):
         self._collection = None
         self._chunks: Dict[str, DocumentChunk] = {}
 
-    def build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
+    def _build(self, artifacts: CorpusArtifacts) -> SetupMetrics:
         monitor = ResourceMonitor()
         build_start = time.perf_counter()
 
@@ -79,11 +79,13 @@ class VectorDBRetriever(BaseRetriever):
 
         self._chunks = {chunk.chunk_id: chunk for chunk in artifacts.chunks}
 
+        wait_for_filesystem_flush()
+        size_mb = directory_size_mb(self.storage_paths())
         metrics = SetupMetrics(
             retriever_name=self.name,
             total_build_seconds=total_seconds,
             memory_peak_mb=monitor.peak_memory_mb(),
-            storage_mb=0.0,  # updated later by benchmark runner
+            storage_mb=size_mb,
             breakdown=SetupBreakdown(
                 total_seconds=total_seconds,
                 chunking_seconds=artifacts.chunk_seconds,
@@ -96,6 +98,20 @@ class VectorDBRetriever(BaseRetriever):
             },
         )
         return metrics
+
+    def _on_build_success(self, artifacts: CorpusArtifacts) -> None:
+        self._save_chunk_cache(artifacts.chunks)
+
+    def _load_cache(self) -> None:
+        cached_chunks = self._load_chunk_cache()
+        if cached_chunks:
+            self._chunks = {chunk.chunk_id: chunk for chunk in cached_chunks}
+        else:
+            self._chunks = {}
+        self._collection = self._client.get_or_create_collection(
+            name=self._collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
 
     def retrieve(self, query: str, query_id: int, **kwargs) -> tuple[RetrievalResult, QueryMetrics]:
         is_repeat = kwargs.get("is_repeat", False)
@@ -136,6 +152,7 @@ class VectorDBRetriever(BaseRetriever):
             retriever_name=self.name,
             query_id=query_id,
             query_text=query,
+            answer_text=generation.text,
             retrieval_latency_ms=retrieval_latency,
             end_to_end_latency_ms=end_to_end,
             context_relevance=evaluation.context_relevance,
